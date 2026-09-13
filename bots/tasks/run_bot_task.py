@@ -4,9 +4,10 @@ import signal
 
 from celery import shared_task
 from celery.signals import worker_shutting_down
+from django.utils import timezone
 
 from bots.bot_controller import BotController
-from bots.models import Bot, BotStates
+from bots.models import Bot, BotEventManager, BotEventSubTypes, BotEventTypes, BotStates
 
 logger = logging.getLogger(__name__)
 
@@ -16,12 +17,17 @@ def run_bot(self, bot_id):
     # Late-acknowledged tasks can be redelivered after a worker restart. A
     # finished bot must be acknowledged without starting another controller.
     try:
-        bot = Bot.objects.only("state").get(id=bot_id)
+        bot = Bot.objects.only("state", "join_at").get(id=bot_id)
     except Bot.DoesNotExist:
         logger.info("Skipping deleted bot %s", bot_id)
         return
     if bot.state in BotStates.post_meeting_states():
         logger.info("Skipping finished bot %s in state %s", bot_id, BotStates.state_to_api_code(bot.state))
+        return
+
+    if bot.state == BotStates.STAGED and bot.join_at and bot.join_at < timezone.now() - timezone.timedelta(minutes=5):
+        logger.info("Skipping expired staged bot %s", bot_id)
+        BotEventManager.create_event(bot=bot, event_type=BotEventTypes.FATAL_ERROR, event_sub_type=BotEventSubTypes.FATAL_ERROR_BOT_NOT_LAUNCHED)
         return
 
     logger.info(f"Running bot {bot_id}")
